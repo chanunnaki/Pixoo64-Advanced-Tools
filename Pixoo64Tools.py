@@ -406,8 +406,24 @@ def load_config():
             DIV_LOGIN_EMAIL = config_data.get('divoom_email', '')
             DIV_LOGIN_PASSWORD = config_data.get('divoom_password', '')
             
+            # Ensure tab defaults exist
+            if 'tabs' not in config_data:
+                config_data['tabs'] = {
+                    "image": True, "video": True, "playlist": True, "text": True,
+                    "designer": True, "webcam": True, "equalizer": True, "sysmon": True,
+                    "calendar": True, "rss": True, "spotify": True, "ai": True,
+                    "gallery": True, "credits": True
+                }
+            
             return config_data
-    return {}
+    return {
+        'tabs': {
+            "image": True, "video": True, "playlist": True, "text": True,
+            "designer": True, "webcam": True, "equalizer": True, "sysmon": True,
+            "calendar": True, "rss": True, "spotify": True, "ai": True,
+            "gallery": True, "credits": True
+        }
+    }
 
 def save_config(data):
         global spotify_refresh_token
@@ -418,6 +434,8 @@ def save_config(data):
             data['spotify_client_secret'] = app.spotify_client_secret_entry.get()
         data['spotify_refresh_token'] = spotify_refresh_token
         data['divoom_email'] = DIV_LOGIN_EMAIL
+        data['divoom_password'] = DIV_LOGIN_PASSWORD
+        # Tabs are preserved from load
         data['divoom_password'] = DIV_LOGIN_PASSWORD
     
         with open(CONFIG_FILE, 'w') as f:
@@ -1860,7 +1878,11 @@ class App(customtkinter.CTk):
         self.nav_buttons = {}
         # Create buttons starting at row 3
         row_idx = 3
+        enabled_tabs = app_config.get('tabs', {})
         for name, (text, create_func) in buttons_info.items():
+            if not enabled_tabs.get(name, True):
+                continue
+                
             button = customtkinter.CTkButton(self.navigation_frame,
                                              text=text,
                                              command=lambda n=name: self.select_frame_by_name(n),
@@ -1881,10 +1903,21 @@ class App(customtkinter.CTk):
         self.stop_button = customtkinter.CTkButton(self.navigation_frame, text="🛑 STOP ALL ACTIVITY",
                                                    command=stop_all_activity, fg_color="#D32F2F", hover_color="#B71C1C",
                                                    font=self.large_font)
-        self.stop_button.grid(row=row_idx + 1, column=0, padx=10, pady=10, sticky="s")
+        self.stop_button.grid(row=row_idx + 1, column=0, padx=10, pady=(10, 5), sticky="s")
+
+        self.reload_button = customtkinter.CTkButton(self.navigation_frame, text="🔄 RELOAD APP",
+                                                   command=self.reload_app, fg_color="#455A64", hover_color="#607D8B",
+                                                   font=self.large_font)
+        self.reload_button.grid(row=row_idx + 2, column=0, padx=10, pady=(5, 5), sticky="s")
+
+        self.flashlight_button = customtkinter.CTkButton(self.navigation_frame, text="🔦 FLASHLIGHT",
+                                                   command=self.activate_flashlight, fg_color="#FFB300", hover_color="#FFA000",
+                                                   text_color="black", font=self.large_font)
+        self.flashlight_button.grid(row=row_idx + 3, column=0, padx=10, pady=(5, 10), sticky="s")
 
 
     def create_all_content_frames(self):
+        enabled_tabs = app_config.get('tabs', {})
         for name, (_, create_func) in {
             "image": ("🖼️ Image/Stream", self.create_image_stream_frame),
             "video": ("▶️ Video Player", self.create_video_frame),
@@ -1901,7 +1934,8 @@ class App(customtkinter.CTk):
             "gallery": ("🖼️ Cloud Gallery", self.create_gallery_frame),
             "credits": ("💡 Credits", self.create_credits_frame),
         }.items():
-            self.content_frames[name] = create_func()
+            if enabled_tabs.get(name, True):
+                self.content_frames[name] = create_func()
 
 
     def select_frame_by_name(self, name):
@@ -1937,6 +1971,114 @@ class App(customtkinter.CTk):
                 pixoo_upload.set_brightness(int(value))
             except Exception as e:
                 logging.error(f"Failed to set brightness: {e}")
+
+    def reload_app(self):
+        """Restarts the current python process."""
+        print("Reloading application...", flush=True)
+        os.execv(sys.executable, ['python', sys.argv[0]] + sys.argv[1:])
+
+    def activate_flashlight(self):
+        """Toggle: Sends white screen + 100% brightness, or returns to clock + original brightness."""
+        if not hasattr(self, 'flashlight_on'):
+            self.flashlight_on = False
+            self.old_brightness = 40
+        
+        if not self.flashlight_on:
+            # --- TURN ON ---
+            self.flashlight_on = True
+            self.flashlight_button.configure(text="🔦 OFF (FLASHLIGHT)", fg_color="#F44336", hover_color="#D32F2F", text_color="white")
+            stop_all_activity()
+            
+            def ramp_up():
+                try:
+                    if pixoo_upload is None: return
+                    self.old_brightness = pixoo_upload.get_brightness()
+                    
+                    # 1. Disable callback temporarily
+                    self.brightness_slider.configure(command=None)
+                    
+                    white_img = Image.new('RGB', (64, 64), 'white')
+                    pixoo_upload.send_image(white_img)
+                    update_preview_label(white_img)
+                    
+                    # Time-based smooth ramp
+                    DURATION = 1.0 # 1 second to reach full brightness
+                    start_time = time.time()
+                    
+                    while True:
+                        if not self.flashlight_on: break
+                        elapsed = time.time() - start_time
+                        if elapsed >= DURATION: break
+                        
+                        # Calculate current target (Linear)
+                        progress = elapsed / DURATION
+                        b = int(self.old_brightness + (100 - self.old_brightness) * progress)
+                        
+                        pixoo_upload.set_brightness(b)
+                        self.after(0, lambda val=b: self.brightness_slider.set(val))
+                        # No fixed sleep, just a tiny breather to let other threads work
+                        time.sleep(0.005)
+                    
+                    # Final snap to 100
+                    pixoo_upload.set_brightness(100)
+                    self.after(0, lambda: self.brightness_slider.set(100))
+                    
+                    # 2. Re-enable callback
+                    self.brightness_slider.configure(command=self.on_brightness_slider_change)
+                except Exception as e:
+                    logging.error(f"Flashlight ON failed: {e}")
+                    # Ensure re-enabled on error
+                    self.brightness_slider.configure(command=self.on_brightness_slider_change)
+            
+            threading.Thread(target=ramp_up, daemon=True).start()
+            
+        else:
+            # --- TURN OFF ---
+            self.flashlight_on = False
+            self.flashlight_button.configure(text="🔦 FLASHLIGHT", fg_color="#FFB300", hover_color="#FFA000", text_color="black")
+            
+            def ramp_down():
+                try:
+                    if pixoo_upload is None: return
+                    
+                    # 1. Reset Pixoo to Clock face
+                    requests.post(f"http://{self.ip_entry.get().strip()}/post", json={"Command": "Draw/ResetHttpGifId"}, timeout=5)
+                    time.sleep(0.2)
+                    requests.post(f"http://{self.ip_entry.get().strip()}/post", json={"Command": "Channel/SetIndex", "SelectIndex": 0}, timeout=5)
+                    
+                    # 2. Disable callback
+                    self.brightness_slider.configure(command=None)
+                    
+                    # Time-based smooth ramp down
+                    DURATION = 1.0
+                    start_time = time.time()
+                    current_start = int(self.brightness_slider.get())
+                    
+                    while True:
+                        if self.flashlight_on: break
+                        elapsed = time.time() - start_time
+                        if elapsed >= DURATION: break
+                        
+                        progress = elapsed / DURATION
+                        b = int(current_start - (current_start - self.old_brightness) * progress)
+                        
+                        pixoo_upload.set_brightness(b)
+                        self.after(0, lambda val=b: self.brightness_slider.set(val))
+                        time.sleep(0.005)
+                    
+                    pixoo_upload.set_brightness(self.old_brightness)
+                    self.after(0, lambda: self.brightness_slider.set(self.old_brightness))
+                    
+                    pixoo_upload.set_brightness(self.old_brightness)
+                    self.after(0, lambda: self.brightness_slider.set(self.old_brightness))
+                    
+                    # 3. Re-enable callback
+                    self.brightness_slider.configure(command=self.on_brightness_slider_change)
+                except Exception as e:
+                    logging.error(f"Flashlight OFF failed: {e}")
+                    self.brightness_slider.configure(command=self.on_brightness_slider_change)
+
+            threading.Thread(target=ramp_down, daemon=True).start()
 
     def toggle_processing_controls(self, enabled=True):
         state = "normal" if enabled else "disabled"

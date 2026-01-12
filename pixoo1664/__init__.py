@@ -39,6 +39,7 @@ class Pixoo:  # noqa: D101
         # Generate URL
         self.__url = "http://{0}/post".format(address)
         self.__timeout = timeout
+        self.__session = requests.Session()
 
         if auto_load_counter:
             # Retrieve the counter
@@ -247,7 +248,7 @@ class Pixoo:  # noqa: D101
 
     def __request(self, data: list):
         try:
-            response = requests.post(
+            response = self.__session.post(
                 self.__url, json.dumps(data), timeout=self.__timeout
             )
 

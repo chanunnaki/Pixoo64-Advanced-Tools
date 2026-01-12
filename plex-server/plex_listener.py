@@ -1,12 +1,13 @@
 import sys
 import time
-print("Script starting...", flush=True)
+import json
 import requests
+import base64
+import io
 from plexapi.server import PlexServer
 from PIL import Image, ImageDraw
-import io
-import base64
-import os
+
+print("Script starting...", flush=True)
 
 # Configuration
 PLEX_URL = 'http://127.0.0.1:32400'
@@ -18,20 +19,37 @@ PIXOO_URL = f"http://{PIXOO_IP}/post"
 
 # State Tracking
 last_track_key = None
-pic_id_counter = 1
+pic_id_counter = 100 
+last_playing_time = time.time()
+is_idle = False
+
+def set_clock(clock_id=0):
+    """Safely returns the Pixoo to the clock face."""
+    try:
+        # 1. Reset the GIF stream buffer first
+        requests.post(PIXOO_URL, data=json.dumps({"Command": "Draw/ResetHttpGifId"}), timeout=5)
+        time.sleep(0.5)
+        
+        # 2. Switch to Clock Index (0)
+        payload = {
+            "Command": "Channel/SetIndex",
+            "SelectIndex": 0
+        }
+        print("Music stopped. Returning to clock face...", file=sys.stderr)
+        requests.post(PIXOO_URL, data=json.dumps(payload), timeout=5)
+    except Exception as e:
+        print(f"Error setting clock: {e}", file=sys.stderr)
 
 def send_to_pixoo(image):
-    """Sends a PIL image to the Pixoo 64 using raw RGB bytes (Library Standard)."""
+    """Sends a PIL image to the Pixoo 64 using raw RGB bytes (Exact Library Standard)."""
     global pic_id_counter
     try:
-        # Increment PicID
         pic_id_counter += 1
-        if pic_id_counter > 60: pic_id_counter = 1
+        if pic_id_counter > 200: pic_id_counter = 100
         
-        # Exact logic from pixoo1664 library
-        img_str = base64.b64encode(bytearray(image.tobytes("raw", "RGB"))).decode()
+        raw_bytes = bytearray(image.tobytes("raw", "RGB"))
+        img_str = base64.b64encode(raw_bytes).decode('utf-8')
         
-        # Payload for Pixoo
         payload = {
             "Command": "Draw/SendHttpGif",
             "PicNum": 1,
@@ -42,15 +60,14 @@ def send_to_pixoo(image):
             "PicData": img_str
         }
         
-        print(f"Sending image to Pixoo at {PIXOO_IP}...", file=sys.stderr)
-        requests.post(PIXOO_URL, json=payload, timeout=5)
+        print(f"Sending image to Pixoo at {PIXOO_IP} (ID: {pic_id_counter})...", file=sys.stderr)
+        requests.post(PIXOO_URL, data=json.dumps(payload), timeout=5)
     except Exception as e:
         print(f"Error sending to Pixoo: {e}", file=sys.stderr)
 
 def get_base_art(thumb_url):
     """Downloads and resizes album art to 64x64. Returns PIL Image."""
     try:
-        # Added timeout=10 to prevent hanging forever
         img_data = requests.get(thumb_url, headers={'X-Plex-Token': PLEX_TOKEN}, stream=True, timeout=10).content
         img = Image.open(io.BytesIO(img_data)).convert('RGB')
         return img.resize((64, 64), Image.Resampling.LANCZOS)
@@ -59,10 +76,9 @@ def get_base_art(thumb_url):
         return None
 
 def main():
-    global last_track_key
+    global last_track_key, last_playing_time, is_idle
     print(f"Connecting to Plex at {PLEX_URL}...", file=sys.stderr)
     try:
-        # Create a session with timeout
         session = requests.Session()
         plex = PlexServer(PLEX_URL, PLEX_TOKEN, session=session, timeout=10)
         print("Connected! Listening for music...", file=sys.stderr)
@@ -80,27 +96,30 @@ def main():
                 last_heartbeat = time.time()
 
             sessions = plex.sessions()
-            music_sessions = [s for s in sessions if s.type == 'track']
+            # Filter for active music sessions that are actually PLAYING
+            music_sessions = [s for s in sessions if s.type == 'track' and s.player.state == 'playing']
             
             if music_sessions:
                 track = music_sessions[0]
+                last_playing_time = time.time()
+                is_idle = False
                 
-                # Check if track changed
                 current_key = track.ratingKey
                 if current_key != last_track_key:
                     print(f"New Track Detected: {track.title}", file=sys.stderr)
                     last_track_key = current_key
-                    
-                    # Get new art
                     art_img = get_base_art(track.thumbUrl)
                     if art_img:
                         send_to_pixoo(art_img)
             
             else:
-                # Reset state when stopped
-                last_track_key = None
+                # Nothing is playing. Check if we should go to clock.
+                if not is_idle and (time.time() - last_playing_time > 60):
+                    set_clock(0)
+                    is_idle = True
+                    last_track_key = None # Reset so it re-sends if track starts again
                 
-            time.sleep(2.0) # Check every 2 seconds
+            time.sleep(2.0)
             
         except Exception as e:
             print(f"Loop error: {e}", file=sys.stderr)
@@ -111,5 +130,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print(f"CRITICAL FAILURE: {e}", file=sys.stderr)
-        import time
         time.sleep(60)
