@@ -1,0 +1,6 @@
+services:
+  plex-pixoo:
+    build: .
+    container_name: plex-pixoo
+    restart: unless-stopped
+    network_mode: host

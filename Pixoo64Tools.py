@@ -588,24 +588,111 @@ def format_speed(speed_in_kb):
     else:
         return f"{speed_in_kb:.0f} KB/s"
 
+def draw_tiny_text(draw, x, y, text, color, stride=6):
+    # Minimal 3x5 font map (extended)
+    # 5 pixels wide max (bits 76543) -> 0x80, 0x40, 0x20, 0x10, 0x08
+    font_map = {
+        'C': [0xF0, 0x80, 0x80, 0x80, 0xF0],
+        'P': [0xF0, 0x88, 0xF0, 0x80, 0x80],
+        'U': [0x88, 0x88, 0x88, 0x88, 0xF0],
+        'R': [0xF0, 0x88, 0xF0, 0xA0, 0x90],
+        'A': [0x70, 0x88, 0xF8, 0x88, 0x88],
+        'M': [0x88, 0xD8, 0xA8, 0x88, 0x88],
+        'G': [0xF0, 0x80, 0xB0, 0x88, 0xF0],
+        'D': [0xF0, 0x88, 0x88, 0x88, 0xF0],
+        'N': [0x88, 0xC8, 0xA8, 0x98, 0x88],
+        '0': [0x60, 0x90, 0x90, 0x90, 0x60],
+        '1': [0x40, 0xC0, 0x40, 0x40, 0xE0],
+        '2': [0xE0, 0x10, 0xE0, 0x80, 0xF0],
+        '3': [0xE0, 0x10, 0x60, 0x10, 0xE0],
+        '4': [0x90, 0x90, 0xF0, 0x10, 0x10],
+        '5': [0xF0, 0x80, 0xE0, 0x10, 0xE0],
+        '6': [0x60, 0x80, 0xE0, 0x90, 0x60],
+        '7': [0xF0, 0x10, 0x20, 0x40, 0x40],
+        '8': [0x60, 0x90, 0x60, 0x90, 0x60],
+        '9': [0x60, 0x90, 0x70, 0x10, 0x60],
+        '.': [0x00, 0x00, 0x00, 0x00, 0x40], # .
+        'K': [0x88, 0x90, 0xE0, 0x90, 0x88], # K
+    }
+    
+    cursor_x = int(x)
+    y = int(y)
+    for char in text.upper():
+        if char in font_map:
+            bitmap = font_map[char]
+            for r, row_byte in enumerate(bitmap):
+                for c in range(5): 
+                    if row_byte & (0x80 >> c):
+                        draw.point((cursor_x + c, y + r), fill=color)
+        cursor_x += stride
+
 def draw_sysmon_dashboard(img, stats, font):
     draw = ImageDraw.Draw(img)
-    y_offset = 2
+    
+    # --- CPU GAUGE (Top Left) ---
+    draw_tiny_text(draw, 8, 2, "CPU", "#AAAAAA")
+    
+    draw.arc([4, 8, 28, 32], start=140, end=40, fill="#333333", width=2)
+    
     if "cpu_total" in stats:
-        draw.text((2, y_offset), f"CPU: {stats['cpu_total']:.0f}%", font=font, fill="white")
-        y_offset += 10
+        val = stats["cpu_total"]
+        angle = 140 + (val / 100 * 260)
+        col = "#00FF00" if val < 50 else "#FFFF00" if val < 80 else "#FF0000"
+        draw.arc([4, 8, 28, 32], start=140, end=angle, fill=col, width=2)
+        
+        # Pixel-Perfect Centering with Custom Font
+        val_str = f"{int(val)}"
+        stride = 5
+        text_width = len(val_str) * stride - 1 # -1 removes last spacing
+        center_x = 16
+        start_x = center_x - (text_width // 2)
+        draw_tiny_text(draw, start_x, 18, val_str, "white", stride=stride)
+
+    # --- RAM GAUGE (Top Right) ---
+    draw_tiny_text(draw, 40, 2, "RAM", "#AAAAAA")
+    
+    draw.arc([36, 8, 60, 32], start=140, end=40, fill="#333333", width=2)
+    
     if "ram" in stats:
-        draw.text((2, y_offset), f"RAM: {stats['ram']:.0f}%", font=font, fill="white")
-        y_offset += 10
-    if stats.get("gpu"):
-        draw.text((2, y_offset), f"GPU: {stats['gpu']['util']}%", font=font, fill="white")
-        y_offset += 10
+        val = stats["ram"]
+        angle = 140 + (val / 100 * 260)
+        draw.arc([36, 8, 60, 32], start=140, end=angle, fill="#00FFFF", width=2)
+        
+        val_str = f"{int(val)}"
+        stride = 5
+        text_width = len(val_str) * stride - 1
+        center_x = 48
+        start_x = center_x - (text_width // 2)
+        draw_tiny_text(draw, start_x, 18, val_str, "white", stride=stride)
+
+    # --- NETWORK / BOTTOM SECTION ---
+    has_gpu = stats.get("gpu") is not None
+    
+    if has_gpu:
+        draw_tiny_text(draw, 4, 38, "GPU", "#AAAAAA")
+        gpu_val = stats['gpu']['util']
+        draw.rectangle([4, 45, 28, 60], outline="#333333")
+        bar_h = int((gpu_val / 100) * 15)
+        draw.rectangle([4, 60 - bar_h, 28, 60], fill="#FF00FF")
+        net_x_start = 32
+    else:
+        net_x_start = 0
+
     if "network" in stats:
-        up_text = format_speed(stats['network']['up'])
-        down_text = format_speed(stats['network']['down'])
-        draw.text((2, y_offset), f"UP: {up_text}", font=font, fill="white")
-        y_offset += 10
-        draw.text((2, y_offset), f"DN: {down_text}", font=font, fill="white")
+        up = stats['network']['up']
+        down = stats['network']['down']
+        
+        def simple_spd(kb):
+            if kb > 1024: return f"{kb/1024:.1f}M"
+            return f"{int(kb)}K"
+
+        # UP: Blueish
+        draw_tiny_text(draw, net_x_start + 2, 40, "UP", "#5555FF")
+        draw_tiny_text(draw, net_x_start + 18, 40, simple_spd(up), "white", stride=5)
+
+        # DN: Greenish
+        draw_tiny_text(draw, net_x_start + 2, 52, "DN", "#00DD00")
+        draw_tiny_text(draw, net_x_start + 18, 52, simple_spd(down), "white", stride=5)
 
 def play_video_for_duration(video_path, duration_s):
     start_time = time.monotonic()
@@ -3029,8 +3116,8 @@ class App(customtkinter.CTk):
 
         self.cpu_total_var = customtkinter.BooleanVar(value=True)
         self.ram_var = customtkinter.BooleanVar(value=True)
-        self.gpu_var = customtkinter.BooleanVar(value=NVIDIA_GPU_SUPPORT)
-        self.network_var = customtkinter.BooleanVar(value=False)
+        self.gpu_var = customtkinter.BooleanVar(value=False)
+        self.network_var = customtkinter.BooleanVar(value=True)
 
         customtkinter.CTkCheckBox(options_frame, text="CPU (Total %)", variable=self.cpu_total_var).pack(anchor="w", padx=20, pady=10)
         customtkinter.CTkCheckBox(options_frame, text="RAM (%)", variable=self.ram_var).pack(anchor="w", padx=20, pady=10)
