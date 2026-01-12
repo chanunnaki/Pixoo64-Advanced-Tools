@@ -79,7 +79,7 @@ except ImportError:
     DIVOOM_DECODER_SUPPORT = False
 
 # Suppress a specific, harmless warning from the soundcard library
-warnings.filterwarnings('ignore', category=sc.SoundcardRuntimeWarning)
+# warnings.filterwarnings('ignore', category=sc.SoundcardRuntimeWarning)
 
 # Sets up how logs are displayed
 logging.basicConfig(
@@ -531,6 +531,7 @@ def advanced_sysmon_task(options):
     tiny_font = ImageFont.load_default()
     last_net_io = psutil.net_io_counters()
     last_time = time.time()
+    cached_network_stats = None
 
     while sysmon_active.is_set():
         if pixoo_stream is None: time.sleep(1); continue
@@ -564,6 +565,9 @@ def advanced_sysmon_task(options):
                 upload_speed = (current_net_io.bytes_sent - last_net_io.bytes_sent) / elapsed_time / 1024
                 download_speed = (current_net_io.bytes_recv - last_net_io.bytes_recv) / elapsed_time / 1024
                 stats["network"] = {"up": upload_speed, "down": download_speed}
+                cached_network_stats = stats["network"]
+            elif cached_network_stats:
+                stats["network"] = cached_network_stats
 
             last_net_io = current_net_io
             last_time = current_time
@@ -1739,6 +1743,16 @@ class App(customtkinter.CTk):
         self.connect_button = customtkinter.CTkButton(ip_frame, text="Connect", width=80, command=self.on_connect_button_click)
         self.connect_button.grid(row=0, column=2, padx=(5,10), pady=10)
 
+        # Brightness Slider
+        brightness_frame = customtkinter.CTkFrame(self.navigation_frame)
+        brightness_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        brightness_frame.grid_columnconfigure(1, weight=1)
+        
+        customtkinter.CTkLabel(brightness_frame, text="Brightness:", font=self.label_font).grid(row=0, column=0, padx=(10, 5), pady=10)
+        self.brightness_slider = customtkinter.CTkSlider(brightness_frame, from_=0, to=100, command=self.on_brightness_slider_change)
+        self.brightness_slider.grid(row=0, column=1, sticky="ew", padx=5, pady=10)
+        self.brightness_slider.set(40)
+
         buttons_info = {
             "image": ("📷 Image/Stream", self.create_image_stream_frame),
             "video": (" ▶ Video Player", self.create_video_frame),
@@ -1757,8 +1771,8 @@ class App(customtkinter.CTk):
         }
 
         self.nav_buttons = {}
-        # Create buttons starting at row 2
-        row_idx = 2
+        # Create buttons starting at row 3
+        row_idx = 3
         for name, (text, create_func) in buttons_info.items():
             button = customtkinter.CTkButton(self.navigation_frame,
                                              text=text,
@@ -1829,6 +1843,13 @@ class App(customtkinter.CTk):
         else:
             if not silent: messagebox.showerror("Failed", f"Could not connect to Pixoo at {ip}")
             self.ip_entry.configure(border_color="red")
+
+    def on_brightness_slider_change(self, value):
+        if pixoo_upload:
+            try:
+                pixoo_upload.set_brightness(int(value))
+            except Exception as e:
+                logging.error(f"Failed to set brightness: {e}")
 
     def toggle_processing_controls(self, enabled=True):
         state = "normal" if enabled else "disabled"

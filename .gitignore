@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.log
+config.json
+test_pixoo.py
+update_pixoo.py
+.DS_Store
